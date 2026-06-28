@@ -102,7 +102,7 @@
         <tbody>
           <tr v-for="f in fileList" :key="f.name">
             <td>{{ f.name }}</td>
-            <td>{{ f.size > 0 ? '--:--' : '--:--' }}</td>
+            <td>--</td>
             <td>
               <span class="status-dot" :class="f.status"></span>
               {{ statusLabel(f.status) }}

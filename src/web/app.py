@@ -10,11 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import shutil
 import sys
 import tempfile
-import time
 import uuid
 from pathlib import Path
 from typing import AsyncGenerator
@@ -30,8 +28,7 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "src.web"
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from src.analyzer import LLMAnalyzer, RuleAnalyzer  # noqa: E402
-from src.models import Level  # noqa: E402
+from src.analyzer import RuleAnalyzer  # noqa: E402
 from src.stt import STTEngine  # noqa: E402
 from src.web.config import (  # noqa: E402
     SummaryField,
@@ -271,21 +268,17 @@ def _transcribe_and_analyze(
     audio_path: Path, stt: STTEngine, analyzer: RuleAnalyzer
 ) -> dict:
     """Run STT + analysis synchronously (called in thread pool)."""
-    from src.web.config import HERE as CFG_HERE
-
     tr = stt.transcribe(str(audio_path), language="zh")
     analysis = analyzer.analyze(tr.text)
 
     # Save transcript
-    transcript_dir = CFG_HERE / "transcripts"
-    transcript_dir.mkdir(parents=True, exist_ok=True)
-    transcript_path = transcript_dir / f"{audio_path.stem}.txt"
+    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    transcript_path = TRANSCRIPT_DIR / f"{audio_path.stem}.txt"
     transcript_path.write_text(tr.text, encoding="utf-8")
 
     # Save analysis result
-    output_dir = CFG_HERE / "output"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{audio_path.stem}_result.json"
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = OUTPUT_DIR / f"{audio_path.stem}_result.json"
     output_path.write_text(
         json.dumps(
             {
@@ -402,9 +395,6 @@ async def export_zip(body: ExportRequest) -> FileResponse:
     # RFC 5987 encoding for non-ASCII filenames in Content-Disposition
     encoded = quote(safe_filename, safe="")
 
-    async def _cleanup():
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
     return FileResponse(
         path=str(zip_path),
         filename=safe_filename,
@@ -412,7 +402,7 @@ async def export_zip(body: ExportRequest) -> FileResponse:
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"
         },
-        background=_cleanup,
+        background=lambda: shutil.rmtree(tmpdir, ignore_errors=True),
     )
 
 
