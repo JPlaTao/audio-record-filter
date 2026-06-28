@@ -143,11 +143,6 @@ def _load_existing_results() -> dict[str, dict]:
 
 app = FastAPI(title="通话录音分级系统", version="0.2.0")
 
-# Mount static files (Vue SPA)
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
-
 
 @app.on_event("startup")
 async def startup() -> None:
@@ -403,16 +398,31 @@ async def export_zip(body: ExportRequest) -> FileResponse:
             if result_path.exists():
                 zf.write(result_path, f"{Path(rec['file']).stem}_result.json")
 
-    from functools import partial
+    from urllib.parse import quote
+
+    safe_filename = f"{zip_base}.zip"
+    # RFC 5987 encoding for non-ASCII filenames in Content-Disposition
+    encoded = quote(safe_filename, safe="")
+
+    async def _cleanup():
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
     return FileResponse(
         path=str(zip_path),
-        filename=f"{zip_base}.zip",
+        filename=safe_filename,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{zip_base}.zip"'},
-        background=partial(shutil.rmtree, tmpdir, ignore_errors=True),
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"
+        },
+        background=_cleanup,
     )
 
+
+# ── Static file mount (after API routes so they take priority) ──────────
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+if STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 # ── Entry ───────────────────────────────────────────────────────────────
 
