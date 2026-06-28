@@ -203,8 +203,6 @@ async def process_files() -> StreamingResponse:
     """Batch-process all pending files via SSE.
 
     ⚠️ GET method required — EventSource only supports GET.
-    """
-    """Batch-process all pending files via SSE.
 
     Yields progress events per file, then a final 'complete' event.
     """
