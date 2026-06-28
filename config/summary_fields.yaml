@@ -1,0 +1,29 @@
+# 摘要字段配置 — 修改此文件即可增减字段，UI 和 ZIP 命名自动生效
+fields:
+  - key: name
+    label: 姓名
+    type: text
+    extract_from: filename
+    required: true
+    filename_order: 1
+
+  - key: status
+    label: 状态
+    type: enum
+    options: [在职, 离职, 待业, 未识别]
+    extract_from: analysis
+    filename_order: 2
+
+  - key: intention
+    label: 意向
+    type: enum
+    options: [高, 中, 低, 未识别]
+    extract_from: analysis
+    filename_order: 3
+
+  - key: school
+    label: 学历
+    type: enum
+    options: [全日制本科, 非全日制本科, 大专, 硕士, 未识别]
+    extract_from: analysis
+    filename_order: 4
