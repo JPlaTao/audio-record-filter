@@ -392,25 +392,25 @@ async def export_zip(body: ExportRequest) -> FileResponse:
         for rec in records_to_export:
             audio_file = INPUT_DIR / rec["file"]
             if audio_file.exists():
-                zf.write(audio_file, rec["file"])
+                zf.write(audio_file, f"{zip_base}{Path(rec['file']).suffix}")
 
             # Transcript — try .txt first (web UI), fall back to .json (CLI)
             stem = Path(rec['file']).stem
             txt_path = TRANSCRIPT_DIR / f"{stem}.txt"
             if txt_path.exists():
-                zf.write(txt_path, f"{stem}.txt")
+                zf.write(txt_path, f"{zip_base}.txt")
             else:
                 # Old CLI transcripts were saved as .json
                 old_json = TRANSCRIPT_DIR / f"{stem}.json"
                 if old_json.exists():
                     import json as json_mod
                     txt_data = json_mod.loads(old_json.read_text(encoding="utf-8"))
-                    zf.writestr(f"{stem}.txt", txt_data.get("text", ""))
+                    zf.writestr(f"{zip_base}.txt", txt_data.get("text", ""))
 
             # Result JSON
             result_path = OUTPUT_DIR / f"{Path(rec['file']).stem}_result.json"
             if result_path.exists():
-                zf.write(result_path, f"{Path(rec['file']).stem}_result.json")
+                zf.write(result_path, f"{zip_base}_result.json")
 
     from urllib.parse import quote
 
