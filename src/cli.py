@@ -34,7 +34,7 @@ DEFAULT_INPUT_DIR = HERE / "input"
 DEFAULT_TRANSCRIPT_DIR = HERE / "transcripts"
 DEFAULT_OUTPUT_DIR = HERE / "output"
 
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".amr"}
 
 
 # ── Report helpers ──────────────────────────────────────────────────────

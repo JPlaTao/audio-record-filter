@@ -45,7 +45,7 @@ HERE = Path(__file__).resolve().parent.parent.parent
 INPUT_DIR = HERE / "input"
 TRANSCRIPT_DIR = HERE / "transcripts"
 OUTPUT_DIR = HERE / "output"
-AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".flac", ".amr"}
 
 # ── In-memory "DB" ──────────────────────────────────────────────────────
 

@@ -12,5 +12,6 @@ input/*.m4a
 input/*.wav
 input/*.ogg
 input/*.flac
+input/*.amr
 *.zip
 
