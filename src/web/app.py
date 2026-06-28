@@ -215,53 +215,68 @@ async def process_files() -> StreamingResponse:
 
 
 async def _process_generator() -> AsyncGenerator[str, None]:
-    stt = get_stt()
-    analyzer = get_analyzer()
+    try:
+        stt = get_stt()
+        analyzer = get_analyzer()
 
-    pending = [
-        p
-        for p in sorted(INPUT_DIR.iterdir())
-        if p.suffix.lower() in AUDIO_EXTENSIONS
-        and not any(
-            rec["file"] == p.name and rec["status"] == "completed"
-            for rec in RECORDS.values()
-        )
-    ]
+        if not INPUT_DIR.exists():
+            logger.error("input/ 目录不存在")
+            yield f"event: error\ndata: {json.dumps({'file': '', 'error': 'input/ 目录不存在'}, ensure_ascii=False)}\n\n"
+            yield "event: complete\ndata: {}\n\n"
+            return
 
-    if not pending:
-        yield "event: complete\ndata: {}\n\n"
-        return
-
-    for audio_path in pending:
-        yield f"event: progress\ndata: {json.dumps({'file': audio_path.name, 'stage': 'transcribing', 'progress': 0.3}, ensure_ascii=False)}\n\n"
-
-        try:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, lambda p=audio_path: _transcribe_and_analyze(p, stt, analyzer)
+        pending = [
+            p
+            for p in sorted(INPUT_DIR.iterdir())
+            if p.suffix.lower() in AUDIO_EXTENSIONS
+            and not any(
+                rec["file"] == p.name and rec["status"] == "completed"
+                for rec in RECORDS.values()
             )
+        ]
 
-            rid = str(uuid.uuid4())
-            summary = _auto_extract_summary(audio_path.name)
-            RECORDS[rid] = {
-                "id": rid,
-                "file": audio_path.name,
-                "duration": result["duration"],
-                "level": result["level"],
-                "score": result["score"],
-                "summary": summary,
-                "status": "completed",
-                "transcript": result.get("transcript_preview", ""),
-                "details": result.get("details", {}),
-            }
+        if not pending:
+            logger.info("没有待处理的录音")
+            yield "event: complete\ndata: {}\n\n"
+            return
 
-            yield f"event: done\ndata: {json.dumps({'file': audio_path.name, 'record_id': rid, 'level': result['level'], 'score': result['score']}, ensure_ascii=False)}\n\n"
+        logger.info("开始批量处理 %d 条录音", len(pending))
 
-        except Exception as e:
-            logger.exception("处理 %s 失败", audio_path.name)
-            yield f"event: error\ndata: {json.dumps({'file': audio_path.name, 'error': str(e)}, ensure_ascii=False)}\n\n"
+        for audio_path in pending:
+            yield f"event: progress\ndata: {json.dumps({'file': audio_path.name, 'stage': 'transcribing', 'progress': 0.3}, ensure_ascii=False)}\n\n"
 
-    yield "event: complete\ndata: {}\n\n"
+            try:
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, lambda p=audio_path: _transcribe_and_analyze(p, stt, analyzer)
+                )
+
+                rid = str(uuid.uuid4())
+                summary = _auto_extract_summary(audio_path.name)
+                RECORDS[rid] = {
+                    "id": rid,
+                    "file": audio_path.name,
+                    "duration": result["duration"],
+                    "level": result["level"],
+                    "score": result["score"],
+                    "summary": summary,
+                    "status": "completed",
+                    "transcript": result.get("transcript_preview", ""),
+                    "details": result.get("details", {}),
+                }
+
+                yield f"event: done\ndata: {json.dumps({'file': audio_path.name, 'record_id': rid, 'level': result['level'], 'score': result['score']}, ensure_ascii=False)}\n\n"
+
+            except Exception as e:
+                logger.exception("处理 %s 失败", audio_path.name)
+                yield f"event: error\ndata: {json.dumps({'file': audio_path.name, 'error': str(e)}, ensure_ascii=False)}\n\n"
+
+        yield "event: complete\ndata: {}\n\n"
+
+    except Exception as e:
+        logger.exception("批量处理异常")
+        yield f"event: error\ndata: {json.dumps({'file': '', 'error': f'服务器内部错误: {e}'}, ensure_ascii=False)}\n\n"
+        yield "event: complete\ndata: {}\n\n"
 
 
 def _transcribe_and_analyze(
@@ -379,10 +394,18 @@ async def export_zip(body: ExportRequest) -> FileResponse:
             if audio_file.exists():
                 zf.write(audio_file, rec["file"])
 
-            # Transcript txt
-            txt_path = TRANSCRIPT_DIR / f"{Path(rec['file']).stem}.txt"
+            # Transcript — try .txt first (web UI), fall back to .json (CLI)
+            stem = Path(rec['file']).stem
+            txt_path = TRANSCRIPT_DIR / f"{stem}.txt"
             if txt_path.exists():
-                zf.write(txt_path, f"{Path(rec['file']).stem}.txt")
+                zf.write(txt_path, f"{stem}.txt")
+            else:
+                # Old CLI transcripts were saved as .json
+                old_json = TRANSCRIPT_DIR / f"{stem}.json"
+                if old_json.exists():
+                    import json as json_mod
+                    txt_data = json_mod.loads(old_json.read_text(encoding="utf-8"))
+                    zf.writestr(f"{stem}.txt", txt_data.get("text", ""))
 
             # Result JSON
             result_path = OUTPUT_DIR / f"{Path(rec['file']).stem}_result.json"
