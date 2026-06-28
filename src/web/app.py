@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import sys
 import tempfile
@@ -33,7 +34,7 @@ if __name__ == "__main__" and __package__ is None:
 # Load .env before any module reads os.environ (e.g. DEEPSEEK_API_KEY)
 load_dotenv()
 
-from src.analyzer import RuleAnalyzer  # noqa: E402
+from src.analyzer import LLMAnalyzer, RuleAnalyzer  # noqa: E402
 from src.stt import STTEngine  # noqa: E402
 from src.summary_extractor import extract_summary  # noqa: E402
 from src.transcript_cleaner import clean_transcript  # noqa: E402
@@ -61,7 +62,8 @@ SUMMARY_FIELDS: list[SummaryField] = []
 # ── Shared engine instances (reused across requests) ────────────────────
 
 _stt: STTEngine | None = None
-_analyzer: RuleAnalyzer | None = None
+_rule_analyzer: RuleAnalyzer | None = None
+_llm_analyzer: LLMAnalyzer | None = None
 
 
 def get_stt() -> STTEngine:
@@ -71,11 +73,25 @@ def get_stt() -> STTEngine:
     return _stt
 
 
-def get_analyzer() -> RuleAnalyzer:
-    global _analyzer
-    if _analyzer is None:
-        _analyzer = RuleAnalyzer()
-    return _analyzer
+def get_rule_analyzer() -> RuleAnalyzer:
+    global _rule_analyzer
+    if _rule_analyzer is None:
+        _rule_analyzer = RuleAnalyzer()
+    return _rule_analyzer
+
+
+def get_llm_analyzer() -> LLMAnalyzer | None:
+    """Return LLM analyzer if DEEPSEEK_API_KEY is set, else None."""
+    global _llm_analyzer
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        return None
+    if _llm_analyzer is None:
+        try:
+            _llm_analyzer = LLMAnalyzer()
+        except Exception as e:
+            logger.warning("LLM 分析器初始化失败: %s", e)
+            return None
+    return _llm_analyzer
 
 
 # ── API models ──────────────────────────────────────────────────────────
@@ -242,7 +258,8 @@ async def process_files(files: str = "") -> StreamingResponse:
 async def _process_generator(files_param: str | None = None) -> AsyncGenerator[str, None]:
     try:
         stt = get_stt()
-        analyzer = get_analyzer()
+        rule_analyzer = get_rule_analyzer()
+        llm_analyzer = get_llm_analyzer()
 
         if not INPUT_DIR.exists():
             logger.error("input/ 目录不存在")
@@ -296,7 +313,7 @@ async def _process_generator(files_param: str | None = None) -> AsyncGenerator[s
             try:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
-                    None, lambda p=audio_path: _transcribe_and_analyze(p, stt, analyzer)
+                    None, lambda p=audio_path: _transcribe_and_analyze(p, stt, rule_analyzer, llm_analyzer)
                 )
 
                 rid = str(uuid.uuid4())
@@ -331,11 +348,18 @@ async def _process_generator(files_param: str | None = None) -> AsyncGenerator[s
 
 
 def _transcribe_and_analyze(
-    audio_path: Path, stt: STTEngine, analyzer: RuleAnalyzer
+    audio_path: Path,
+    stt: STTEngine,
+    rule_analyzer: RuleAnalyzer,
+    llm_analyzer: LLMAnalyzer | None = None,
 ) -> dict:
-    """Run STT + analysis synchronously (called in thread pool)."""
+    """Run STT + analysis synchronously (called in thread pool).
+
+    Runs RuleAnalyzer (keyword) always, plus LLM analyzer if available.
+    LLM result is used as the primary level/score; RuleAnalyzer is the fallback.
+    """
     tr = stt.transcribe(str(audio_path), language="zh")
-    analysis = analyzer.analyze(tr.text)
+    rule_result = rule_analyzer.analyze(tr.text)
 
     # LLM transcript cleaning (speaker diarization + text cleanup)
     clean_result = clean_transcript(tr.segments, tr.text)
@@ -352,10 +376,51 @@ def _transcribe_and_analyze(
         summary_fields = extract_result.values
         logger.info("摘要字段提取完成: %s", audio_path.name)
 
+    # LLM grade analysis — use as primary if available
+    llm_result = None
+    if llm_analyzer:
+        try:
+            llm_result = llm_analyzer.analyze(tr.text)
+            logger.info("LLM 评级完成: %s -> %s", audio_path.name, llm_result.level.value)
+        except Exception as e:
+            logger.warning("LLM 评级失败，回退到规则分析: %s", e)
+
+    # Primary result: LLM if available, else RuleAnalyzer
+    primary = llm_result if llm_result else rule_result
+    level = primary.level.value
+    score = primary.score
+
     # Save transcript (cleaned if available, raw as fallback)
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     transcript_path = TRANSCRIPT_DIR / f"{audio_path.stem}.txt"
     transcript_path.write_text(display_text, encoding="utf-8")
+
+    # Combine details
+    details: dict = {
+        "total_steps": rule_result.total_steps,
+        "completed_steps": rule_result.completed_steps,
+        "step_results": [
+            {
+                "step_name": sr.step_name,
+                "matched": sr.matched,
+                "score": sr.score,
+            }
+            for sr in rule_result.step_results
+        ],
+        "reasoning": rule_result.reasoning,
+    }
+    if llm_result:
+        details["llm_level"] = llm_result.level.value
+        details["llm_score"] = llm_result.score
+        details["llm_reasoning"] = llm_result.reasoning
+        details["llm_step_results"] = [
+            {
+                "step_name": sr.step_name,
+                "matched": sr.matched,
+                "score": sr.score,
+            }
+            for sr in llm_result.step_results
+        ]
 
     # Save analysis result
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -365,21 +430,9 @@ def _transcribe_and_analyze(
             {
                 "file": audio_path.name,
                 "duration": tr.duration,
-                "level": analysis.level.value,
-                "score": analysis.score,
-                "details": {
-                    "total_steps": analysis.total_steps,
-                    "completed_steps": analysis.completed_steps,
-                    "step_results": [
-                        {
-                            "step_name": sr.step_name,
-                            "matched": sr.matched,
-                            "score": sr.score,
-                        }
-                        for sr in analysis.step_results
-                    ],
-                    "reasoning": analysis.reasoning,
-                },
+                "level": level,
+                "score": score,
+                "details": details,
             },
             ensure_ascii=False,
             indent=2,
@@ -389,15 +442,11 @@ def _transcribe_and_analyze(
 
     return {
         "duration": tr.duration,
-        "level": analysis.level.value,
-        "score": analysis.score,
+        "level": level,
+        "score": score,
         "summary_fields": summary_fields,
         "transcript_preview": display_text[:200],
-        "details": {
-            "total_steps": analysis.total_steps,
-            "completed_steps": analysis.completed_steps,
-            "reasoning": analysis.reasoning,
-        },
+        "details": details,
     }
 
 

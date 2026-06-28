@@ -188,9 +188,29 @@
         </div>
 
         <div class="section" v-if="detailRecord.details">
-          <h3>步骤完成情况</h3>
-          <p v-if="detailRecord.details.reasoning" style="font-size:13px;color:#555;margin-bottom:8px;">{{ detailRecord.details.reasoning }}</p>
-          <p style="font-size:13px;color:#888;">{{ detailRecord.details.completed_steps }}/{{ detailRecord.details.total_steps }} 步骤完成</p>
+          <h3>评级分析</h3>
+
+          <!-- LLM analysis result (primary) -->
+          <div v-if="detailRecord.details.llm_reasoning" style="background:#f0f5ff;padding:10px;border-radius:4px;margin-bottom:8px;">
+            <p style="font-size:12px;color:#1677ff;font-weight:600;margin-bottom:4px;">🤖 LLM 深度分析</p>
+            <p style="font-size:13px;color:#555;">{{ detailRecord.details.llm_reasoning }}</p>
+            <p v-if="detailRecord.details.llm_level" style="font-size:12px;color:#888;margin-top:4px;">
+              LLM评分: {{ levelLabel(detailRecord.details.llm_level) }} ({{ Math.round(detailRecord.details.llm_score * 100) }}%)
+            </p>
+          </div>
+
+          <!-- Rule analyzer comparison -->
+          <p style="font-size:13px;color:#888;margin-bottom:4px;">
+            规则分析: {{ detailRecord.details.completed_steps }}/{{ detailRecord.details.total_steps }} 步骤完成
+            <template v-if="detailRecord.details.step_results">
+              · 关键词命中率: {{ Math.round(detailRecord.score * 100) }}%
+            </template>
+          </p>
+          <div v-if="detailRecord.details.step_results" style="font-size:12px;color:#888;">
+            <span v-for="s in detailRecord.details.step_results" :key="s.step_name" style="margin-right:6px;">
+              {{ s.matched ? '✅' : '⭕' }}{{ s.step_name.slice(0,8) }}
+            </span>
+          </div>
         </div>
 
         <div class="section" v-if="detailRecord.transcript">
