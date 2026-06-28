@@ -1,5 +1,5 @@
-"""Support `python -m src` entry point."""
+"""Entry points for python -m src."""
 
-from .cli import main
-
-main()
+if __name__ == "__main__":
+    from .cli import main as cli_main
+    cli_main()
