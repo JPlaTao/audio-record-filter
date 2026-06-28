@@ -5,3 +5,12 @@ __pycache__/
 venv/
 *.egg-info/
 .superpowers/
+output/
+transcripts/
+input/*.mp3
+input/*.m4a
+input/*.wav
+input/*.ogg
+input/*.flac
+*.zip
+
