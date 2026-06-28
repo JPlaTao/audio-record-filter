@@ -30,6 +30,7 @@ if __name__ == "__main__" and __package__ is None:
 
 from src.analyzer import RuleAnalyzer  # noqa: E402
 from src.stt import STTEngine  # noqa: E402
+from src.transcript_cleaner import clean_transcript  # noqa: E402
 from src.web.config import (  # noqa: E402
     SummaryField,
     build_zip_filename,
@@ -286,10 +287,18 @@ def _transcribe_and_analyze(
     tr = stt.transcribe(str(audio_path), language="zh")
     analysis = analyzer.analyze(tr.text)
 
-    # Save transcript
+    # LLM transcript cleaning (speaker diarization + text cleanup)
+    clean_result = clean_transcript(tr.segments, tr.text)
+    display_text = clean_result.text if clean_result.success else tr.text
+    if clean_result.success:
+        logger.info("转录整理完成: %s", audio_path.name)
+    else:
+        logger.warning("转录整理跳过（API 不可用或失败），使用原始文字稿: %s", audio_path.name)
+
+    # Save transcript (cleaned if available, raw as fallback)
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     transcript_path = TRANSCRIPT_DIR / f"{audio_path.stem}.txt"
-    transcript_path.write_text(tr.text, encoding="utf-8")
+    transcript_path.write_text(display_text, encoding="utf-8")
 
     # Save analysis result
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -325,7 +334,7 @@ def _transcribe_and_analyze(
         "duration": tr.duration,
         "level": analysis.level.value,
         "score": analysis.score,
-        "transcript_preview": tr.text[:200],
+        "transcript_preview": display_text[:200],
         "details": {
             "total_steps": analysis.total_steps,
             "completed_steps": analysis.completed_steps,
