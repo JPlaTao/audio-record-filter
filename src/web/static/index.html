@@ -233,12 +233,14 @@
       // Load fields on mount
       fetch(`${BASE}/api/fields`)
         .then(r => r.json())
-        .then(data => fields.value = data);
+        .then(data => fields.value = data)
+        .catch(err => console.error('加载字段失败:', err));
 
       // Load existing records
       fetch(`${BASE}/api/records`)
         .then(r => r.json())
-        .then(data => records.value = data);
+        .then(data => records.value = data)
+        .catch(err => console.error('加载记录失败:', err));
 
       function statusLabel(s) {
         const m = { pending: '待处理', processing: '处理中', completed: '已完成', error: '失败' };
@@ -312,6 +314,17 @@
           processing.value = false;
           progressPercent.value = 100;
         });
+
+        es.onerror = () => {
+          es.close();
+          processing.value = false;
+          // Reset processing files back to pending
+          fileList.value.forEach(f => {
+            if (f.status === 'processing') f.status = 'pending';
+          });
+          console.error('SSE 连接断开');
+          alert('处理连接断开，请重试');
+        };
       }
 
       function onUpdate(rec) {
@@ -319,6 +332,9 @@
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ summary: rec.summary }),
+        }).catch(err => {
+          console.error('保存失败:', err);
+          alert('保存失败，请重试');
         });
       }
 
@@ -343,7 +359,8 @@
         }
         const blob = await res.blob();
         const disposition = res.headers.get('Content-Disposition') || '';
-        const match = disposition.match(/filename="?(.+?)"?$/);
+        // RFC 5987: filename*=UTF-8''<name>; fallback: filename="<name>"
+        const match = disposition.match(/filename\*=UTF-8''(.+?)(?:;|$)/) || disposition.match(/filename="?(.+?)"?$/);
         const filename = match ? match[1] : 'export.zip';
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
