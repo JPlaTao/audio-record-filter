@@ -30,6 +30,7 @@ if __name__ == "__main__" and __package__ is None:
 
 from src.analyzer import RuleAnalyzer  # noqa: E402
 from src.stt import STTEngine  # noqa: E402
+from src.summary_extractor import extract_summary  # noqa: E402
 from src.transcript_cleaner import clean_transcript  # noqa: E402
 from src.web.config import (  # noqa: E402
     SummaryField,
@@ -90,15 +91,28 @@ class ExportRequest(BaseModel):
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
-def _auto_extract_summary(filename: str) -> dict[str, str]:
-    """Auto-populate summary fields from filename + analysis (placeholder)."""
+def _auto_extract_summary(
+    filename: str,
+    llm_values: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Auto-populate summary fields from filename + optional LLM analysis.
+
+    Args:
+        filename: Audio file name (e.g. "张三_20250628.mp3").
+        llm_values: Values extracted by LLM from transcript keyed by field key.
+
+    Returns:
+        Dict mapping field key -> extracted or fallback value.
+    """
     result: dict[str, str] = {}
-    stem = Path(filename).stem  # "张三_20250628" from "张三_20250628.mp3"
+    stem = Path(filename).stem
     for f in SUMMARY_FIELDS:
         if f.extract_from == "filename":
             # Take everything before first "_"
             val = stem.split("_")[0] if "_" in stem else stem
             result[f.key] = val
+        elif llm_values and f.key in llm_values:
+            result[f.key] = llm_values[f.key]
         else:
             result[f.key] = "未识别"
     return result
@@ -281,7 +295,10 @@ async def _process_generator(files_param: str | None = None) -> AsyncGenerator[s
                 )
 
                 rid = str(uuid.uuid4())
-                summary = _auto_extract_summary(audio_path.name)
+                summary = _auto_extract_summary(
+                    audio_path.name,
+                    llm_values=result.get("summary_fields"),
+                )
                 RECORDS[rid] = {
                     "id": rid,
                     "file": audio_path.name,
@@ -323,6 +340,13 @@ def _transcribe_and_analyze(
     else:
         logger.warning("转录整理跳过（API 不可用或失败），使用原始文字稿: %s", audio_path.name)
 
+    # LLM summary field extraction (status, intention, school, etc.)
+    extract_result = extract_summary(display_text, SUMMARY_FIELDS)
+    summary_fields: dict[str, str] = {}
+    if extract_result.success:
+        summary_fields = extract_result.values
+        logger.info("摘要字段提取完成: %s", audio_path.name)
+
     # Save transcript (cleaned if available, raw as fallback)
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     transcript_path = TRANSCRIPT_DIR / f"{audio_path.stem}.txt"
@@ -362,6 +386,7 @@ def _transcribe_and_analyze(
         "duration": tr.duration,
         "level": analysis.level.value,
         "score": analysis.score,
+        "summary_fields": summary_fields,
         "transcript_preview": display_text[:200],
         "details": {
             "total_steps": analysis.total_steps,
