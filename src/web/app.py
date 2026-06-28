@@ -197,15 +197,20 @@ async def scan_input() -> ScanResponse:
 
 
 @app.get("/api/process")
-async def process_files() -> StreamingResponse:
-    """Batch-process all pending files via SSE.
+async def process_files(files: str = "") -> StreamingResponse:
+    """Batch-process audio files via SSE.
+
+    Optional query param:
+      files=file1.mp3,file2.mp3  — process only the specified files (ignore
+                                    status check); supports reprocessing
+      (no files)                 — process all pending files (current behavior)
 
     ⚠️ GET method required — EventSource only supports GET.
 
     Yields progress events per file, then a final 'complete' event.
     """
     return StreamingResponse(
-        _process_generator(),
+        _process_generator(files_param=files if files else None),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -215,7 +220,7 @@ async def process_files() -> StreamingResponse:
     )
 
 
-async def _process_generator() -> AsyncGenerator[str, None]:
+async def _process_generator(files_param: str | None = None) -> AsyncGenerator[str, None]:
     try:
         stt = get_stt()
         analyzer = get_analyzer()
@@ -226,22 +231,45 @@ async def _process_generator() -> AsyncGenerator[str, None]:
             yield "event: complete\ndata: {}\n\n"
             return
 
-        pending = [
-            p
-            for p in sorted(INPUT_DIR.iterdir())
-            if p.suffix.lower() in AUDIO_EXTENSIONS
-            and not any(
-                rec["file"] == p.name and rec["status"] == "completed"
-                for rec in RECORDS.values()
-            )
-        ]
+        if files_param:
+            # Selective processing mode: process only specified files, clean old
+            # records and output/transcript files, then re-process them.
+            file_names = {name.strip() for name in files_param.split(",")}
+            pending = [
+                p
+                for p in sorted(INPUT_DIR.iterdir())
+                if p.name in file_names and p.suffix.lower() in AUDIO_EXTENSIONS
+            ]
+            # Clean old RECORDS entries for the specified files
+            for rid, rec in list(RECORDS.items()):
+                if rec["file"] in file_names:
+                    del RECORDS[rid]
+            # Clean old output/transcript files
+            for p in pending:
+                result_path = OUTPUT_DIR / f"{p.stem}_result.json"
+                if result_path.exists():
+                    result_path.unlink()
+                txt_path = TRANSCRIPT_DIR / f"{p.stem}.txt"
+                if txt_path.exists():
+                    txt_path.unlink()
+            logger.info("选择性处理 %d 条录音（含重新识别）: %s", len(pending), files_param)
+        else:
+            # Existing behavior: process all pending (non-completed) files
+            pending = [
+                p
+                for p in sorted(INPUT_DIR.iterdir())
+                if p.suffix.lower() in AUDIO_EXTENSIONS
+                and not any(
+                    rec["file"] == p.name and rec["status"] == "completed"
+                    for rec in RECORDS.values()
+                )
+            ]
+            logger.info("批量处理 %d 条录音", len(pending))
 
         if not pending:
             logger.info("没有待处理的录音")
             yield "event: complete\ndata: {}\n\n"
             return
-
-        logger.info("开始批量处理 %d 条录音", len(pending))
 
         for audio_path in pending:
             yield f"event: progress\ndata: {json.dumps({'file': audio_path.name, 'stage': 'transcribing', 'progress': 0.3}, ensure_ascii=False)}\n\n"
