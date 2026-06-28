@@ -83,8 +83,15 @@
         <button class="btn btn-primary" @click="batchProcess" :disabled="processing || pendingFiles.length === 0">
           &#9654; 批量处理
         </button>
+        <button class="btn" @click="selectAllPending" :disabled="fileList.length === 0">
+          ☑ 全选未处理
+        </button>
+        <button class="btn" @click="clearSelection" :disabled="selectedFiles.length === 0">
+          取消选择
+        </button>
         <span class="info" v-if="fileList.length > 0">
           共 {{ fileList.length }} 条，待处理 {{ pendingFiles.length }} 条
+          <template v-if="selectedFiles.length > 0">，已选 {{ selectedFiles.length }} 条</template>
         </span>
       </div>
 
@@ -97,6 +104,7 @@
       <table v-if="fileList.length > 0">
         <thead>
           <tr>
+            <th style="width:30px"></th>
             <th>文件名</th>
             <th style="width:60px">时长</th>
             <th style="width:100px">状态</th>
@@ -104,6 +112,7 @@
         </thead>
         <tbody>
           <tr v-for="f in fileList" :key="f.name">
+            <td><input type="checkbox" :value="f.name" v-model="selectedFiles"></td>
             <td>{{ f.name }}</td>
             <td>--</td>
             <td>
@@ -152,6 +161,7 @@
             </td>
             <td>
               <span class="link-like" @click="showDetail(rec)">详情</span>
+              <span class="link-like" style="margin-left:8px;color:#ff4d4f;" @click="reprocess(rec)">重新处理</span>
             </td>
           </tr>
         </tbody>
@@ -213,6 +223,7 @@
       const progressPercent = ref(0);
       const detailRecord = ref(null);
       const errorMsg = ref('');
+      const selectedFiles = ref([]);
 
       const pendingFiles = computed(() => fileList.value.filter(f => f.status === 'pending'));
 
@@ -266,6 +277,7 @@
         } finally {
           scanning.value = false;
         }
+        selectedFiles.value = [];
       }
 
       async function batchProcess() {
@@ -274,13 +286,17 @@
         progressPercent.value = 0;
         selectedIds.value = [];
 
+        const files = [...selectedFiles.value];
+        if (files.length === 0) { processing.value = false; return; }
+
         // Mark files as processing
         fileList.value.forEach(f => {
-          if (f.status === 'pending') f.status = 'processing';
+          if (files.includes(f.name)) f.status = 'processing';
         });
 
-        const es = new EventSource(`${BASE}/api/process`);
-        const total = fileList.value.filter(f => f.status === 'processing' || f.status === 'completed').length;
+        const params = new URLSearchParams({ files: files.join(',') });
+        const es = new EventSource(`${BASE}/api/process?${params}`);
+        const total = files.length;
         let done = 0;
         let completedEventReceived = false;
 
@@ -339,6 +355,38 @@
         };
       }
 
+      function selectAllPending() {
+        selectedFiles.value = fileList.value
+          .filter(f => f.status === 'pending')
+          .map(f => f.name);
+        selectAll.value = false; // 不影响底部面板的全选
+      }
+
+      function clearSelection() {
+        selectedFiles.value = [];
+      }
+
+      async function reprocess(rec) {
+        if (!confirm(`确定要重新处理「${rec.file}」吗？`)) return;
+        errorMsg.value = '';
+
+        // 1. 先扫描目录，确保 fileList 有该文件
+        await scanDir();
+
+        // 2. 勾选该文件
+        selectedFiles.value = [rec.file];
+        fileList.value.forEach(f => {
+          if (f.name === rec.file) f.status = 'pending';
+        });
+
+        // 3. 从 RECORDS 中移除旧记录
+        const idx = records.value.findIndex(r => r.id === rec.id);
+        if (idx >= 0) records.value.splice(idx, 1);
+
+        // 4. 立即启动处理（只处理这一个文件）
+        await batchProcess();
+      }
+
       function onUpdate(rec) {
         fetch(`${BASE}/api/records/${rec.id}`, {
           method: 'PUT',
@@ -389,9 +437,11 @@
       return {
         fileList, records, fields, scanning, processing,
         searchQuery, selectedIds, selectAll, progressPercent, detailRecord, errorMsg,
+        selectedFiles,
         pendingFiles, filteredRecords, hasMissingName, hasMissingNames,
         statusLabel, levelLabel,
-        scanDir, batchProcess, onUpdate, toggleAll, exportZip, showDetail,
+        scanDir, batchProcess, selectAllPending, clearSelection, reprocess,
+        onUpdate, toggleAll, exportZip, showDetail,
       };
     }
   }).mount('#app');
