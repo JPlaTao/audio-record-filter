@@ -17,6 +17,8 @@ import uuid
 from pathlib import Path
 from typing import AsyncGenerator
 
+from dotenv import load_dotenv
+
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
@@ -27,6 +29,9 @@ from pydantic import BaseModel
 if __name__ == "__main__" and __package__ is None:
     __package__ = "src.web"
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+# Load .env before any module reads os.environ (e.g. DEEPSEEK_API_KEY)
+load_dotenv()
 
 from src.analyzer import RuleAnalyzer  # noqa: E402
 from src.stt import STTEngine  # noqa: E402
