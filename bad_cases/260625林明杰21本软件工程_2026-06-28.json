@@ -1,0 +1,8 @@
+{
+  "file": "260625林明杰21本软件工程.m4a",
+  "system_level": "intermediate",
+  "human_level": "beginner",
+  "reason": "large-v3+LLM判为中级，但业务方确认为初级。核心问题：LLM被清晰的文字稿误导，看到了'做了步骤'但没充分判断'做得好不好'——机械走流程vs展现技巧的区别需要进一步校准",
+  "date": "2026-06-28",
+  "agreed": false
+}
