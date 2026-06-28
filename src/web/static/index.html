@@ -282,6 +282,7 @@
         const es = new EventSource(`${BASE}/api/process`);
         const total = fileList.value.filter(f => f.status === 'processing' || f.status === 'completed').length;
         let done = 0;
+        let completedEventReceived = false;
 
         es.addEventListener('progress', e => {
           const data = JSON.parse(e.data);
@@ -316,6 +317,7 @@
         });
 
         es.addEventListener('complete', () => {
+          completedEventReceived = true;
           es.close();
           processing.value = false;
           progressPercent.value = 100;
@@ -324,6 +326,10 @@
         es.onerror = () => {
           es.close();
           processing.value = false;
+          if (completedEventReceived) {
+            // Normal close after all events processed — not an error
+            return;
+          }
           // Reset processing files back to pending
           fileList.value.forEach(f => {
             if (f.status === 'processing') f.status = 'pending';
