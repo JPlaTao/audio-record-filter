@@ -286,16 +286,23 @@
         progressPercent.value = 0;
         selectedIds.value = [];
 
-        const files = [...selectedFiles.value];
-        if (files.length === 0) { processing.value = false; return; }
+        let url = `${BASE}/api/process`;
+        let files = [...selectedFiles.value];
+
+        if (files.length === 0) {
+          // No files selected: process all pending (legacy behavior)
+          files = pendingFiles.value.map(f => f.name);
+          if (files.length === 0) { processing.value = false; return; }
+        } else {
+          url = `${BASE}/api/process?${new URLSearchParams({ files: files.join(',') })}`;
+        }
 
         // Mark files as processing
         fileList.value.forEach(f => {
           if (files.includes(f.name)) f.status = 'processing';
         });
 
-        const params = new URLSearchParams({ files: files.join(',') });
-        const es = new EventSource(`${BASE}/api/process?${params}`);
+        const es = new EventSource(url);
         const total = files.length;
         let done = 0;
         let completedEventReceived = false;
@@ -326,6 +333,7 @@
         });
 
         es.addEventListener('error', e => {
+          if (!e.data) return;
           const data = JSON.parse(e.data);
           done++;
           const f = fileList.value.find(f => f.name === data.file);
