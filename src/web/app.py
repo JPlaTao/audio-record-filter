@@ -137,11 +137,6 @@ def _load_existing_results() -> dict[str, dict]:
     return records
 
 
-def _cleanup_tempdir(tmpdir: str) -> None:
-    try:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-    except Exception:
-        pass
 
 
 # ── FastAPI app ─────────────────────────────────────────────────────────
@@ -408,12 +403,14 @@ async def export_zip(body: ExportRequest) -> FileResponse:
             if result_path.exists():
                 zf.write(result_path, f"{Path(rec['file']).stem}_result.json")
 
+    from functools import partial
+
     return FileResponse(
         path=str(zip_path),
         filename=f"{zip_base}.zip",
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{zip_base}.zip"'},
-        background=_cleanup_tempdir,
+        background=partial(shutil.rmtree, tmpdir, ignore_errors=True),
     )
 
 
