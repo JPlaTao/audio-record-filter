@@ -268,26 +268,15 @@ async def _process_generator(files_param: str | None = None) -> AsyncGenerator[s
             return
 
         if files_param:
-            # Selective processing mode: process only specified files, clean old
-            # records and output/transcript files, then re-process them.
+            # Selective processing mode: process only specified files
             file_names = {name.strip() for name in files_param.split(",")}
             pending = [
                 p
                 for p in sorted(INPUT_DIR.iterdir())
                 if p.name in file_names and p.suffix.lower() in AUDIO_EXTENSIONS
             ]
-            # Clean old RECORDS entries for the specified files
-            for rid, rec in list(RECORDS.items()):
-                if rec["file"] in file_names:
-                    del RECORDS[rid]
-            # Clean old output/transcript files
-            for p in pending:
-                result_path = OUTPUT_DIR / f"{p.stem}_result.json"
-                if result_path.exists():
-                    result_path.unlink()
-                txt_path = TRANSCRIPT_DIR / f"{p.stem}.txt"
-                if txt_path.exists():
-                    txt_path.unlink()
+            # ⚠️ Don't clean records/files upfront — clean per-file AFTER
+            # successful processing to avoid data loss on failure/hang.
             logger.info("选择性处理 %d 条录音（含重新识别）: %s", len(pending), files_param)
         else:
             # Existing behavior: process all pending (non-completed) files
@@ -312,9 +301,23 @@ async def _process_generator(files_param: str | None = None) -> AsyncGenerator[s
 
             try:
                 loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, lambda p=audio_path: _transcribe_and_analyze(p, stt, rule_analyzer, llm_analyzer)
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, lambda p=audio_path: _transcribe_and_analyze(p, stt, rule_analyzer, llm_analyzer)
+                    ),
+                    timeout=600,  # 10 min max per file
                 )
+
+                # Clean old record + files for this file ONLY after success
+                for rid, rec in list(RECORDS.items()):
+                    if rec["file"] == audio_path.name:
+                        del RECORDS[rid]
+                result_path = OUTPUT_DIR / f"{audio_path.stem}_result.json"
+                if result_path.exists():
+                    result_path.unlink()
+                txt_path = TRANSCRIPT_DIR / f"{audio_path.stem}.txt"
+                if txt_path.exists():
+                    txt_path.unlink()
 
                 rid = str(uuid.uuid4())
                 summary = _auto_extract_summary(
