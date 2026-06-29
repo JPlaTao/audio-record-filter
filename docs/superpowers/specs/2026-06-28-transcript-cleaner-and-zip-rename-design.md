@@ -100,3 +100,10 @@ def clean_transcript(
 - **Task 3: 接入处理管线** — 在 `_transcribe_and_analyze()` 中转写完成后调用 `clean_transcript()`，成功则保存 clean.txt，失败回落 raw text
 - 分析逻辑不受影响，仍使用 raw text 做关键词匹配
 
+### 2026-06-29/30
+- **LLM 摘要字段自动提取** — 新增 `src/summary_extractor.py`，从 cleaned transcript 提取 状态/意向/学历 等摘要字段
+- **LLM 分析器接入 Web 管线** — `_transcribe_and_analyze()` 现在同时运行 RuleAnalyzer + LLMAnalyzer，LLM 结果作为主评
+- **数据丢失 bug 修复** — 重新处理时清理操作移到成功之后执行，避免处理卡住时数据全丢；加 600s 超时保护
+- **选择性处理 + 重新识别 UI** — 前端复选框选择、全选未处理、重新处理按钮
+- **AMR 格式支持** — `.amr` 加入 AUDIO_EXTENSIONS
+
