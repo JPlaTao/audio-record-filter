@@ -34,6 +34,23 @@ class SignalConfig:
     good_threshold: float = 0.30
 
 
+# ── Domain keywords (topic coherence) ─────────────────────────────────────
+# Used to detect when the conversation is off-topic — e.g. talking about
+# Python / IT training in a call that should be about HR outplacement.
+
+_EXPECTED_DOMAIN_KW = [
+    "实训", "岗位", "就业", "人力", "资源", "招聘", "猎头", "职业",
+    "AI", "大模型", "企业", "对接", "服务费", "免费试听", "岗前",
+    "学历", "薪资", "15-25K", "学信网", "全日制",
+]
+
+_NEGATIVE_DOMAIN_KW = [
+    "Python", "编程", "代码", "开发", "技术", "Java", "前端", "后端",
+    "全栈", "算法", "数据结构", "迭代器", "装饰器", "接口", "程序",
+    "linux", "docker", "git", "框架", "数据库", "测试",
+]
+
+
 # ── Parser helpers ────────────────────────────────────────────────────────
 
 _SPEAKER_RE = re.compile(r"^(顾问|学员)[：:]")
@@ -132,6 +149,41 @@ def _calc_turn_count(parsed: dict) -> float:
     return float(max(len(parsed["consultant"]), len(parsed["student"])))
 
 
+def _calc_topic_coherence(parsed: dict, raw_text: str = "") -> float:
+    """Measure whether the conversation stays on expected domain topics.
+
+    Computes a score from 0 (completely off-topic) to 1 (on-topic).
+    The logic:
+      1. Count expected-domain keyword matches in student + consultant speech.
+      2. Count negative-domain keyword matches.
+      3. Score = max(0, (expected - negative) / max(expected, 1))
+
+    A positive value means the conversation is about the right things.
+    A zero or negative value means off-domain topics dominate.
+    """
+    text = " ".join(parsed.get("consultant", []) + parsed.get("student", []))
+    if not text:
+        text = raw_text
+    if not text:
+        return 0.5  # neutral when no data
+
+    text_lower = text.lower()
+
+    expected_count = sum(1 for kw in _EXPECTED_DOMAIN_KW if kw.lower() in text_lower)
+    negative_count = sum(1 for kw in _NEGATIVE_DOMAIN_KW if kw.lower() in text_lower)
+
+    # If neither expected nor negative keywords found → conservative 0.5
+    if expected_count == 0 and negative_count == 0:
+        return 0.5
+
+    # Score: (expected - negative) / max(expected, 1) → roughly [-1, 1]
+    denominator = max(expected_count, 1)
+    raw_score = (expected_count - negative_count) / denominator
+
+    # Clamp to [0, 1]
+    return max(0.0, min(1.0, raw_score))
+
+
 # ── Registry ─────────────────────────────────────────────────────────────-
 # To add a new signal: append a new entry here.  The scoring loop picks it up
 # automatically.  Each entry can also be overridden at init time.
@@ -141,31 +193,37 @@ DEFAULT_SIGNALS: list[SignalConfig] = [
     SignalConfig(
         key="student_speaking_ratio",
         label="学员说话占比",
-        weight=0.25,
+        weight=0.20,
         good_threshold=0.25,
     ),
     SignalConfig(
         key="student_avg_reply_length",
         label="学员平均回复长度(字)",
-        weight=0.20,
+        weight=0.15,
         good_threshold=20,
+    ),
+    SignalConfig(
+        key="topic_coherence",
+        label="话题主题一致性",
+        weight=0.20,
+        good_threshold=0.60,
     ),
     SignalConfig(
         key="student_question_count",
         label="学员主动提问次数",
-        weight=0.20,
+        weight=0.10,
         good_threshold=3,
     ),
     SignalConfig(
         key="consultant_followup_density",
         label="顾问追问密度(次/百字)",
-        weight=0.15,
+        weight=0.20,
         good_threshold=0.04,
     ),
     SignalConfig(
         key="turn_count",
         label="对话轮次",
-        weight=0.10,
+        weight=0.05,
         good_threshold=10,
     ),
     # Lower filler density is better — override default
@@ -195,6 +253,7 @@ _SIGNAL_FUNCS: dict[str, Callable] = {
     "consultant_followup_density": _calc_followup_density,
     "filler_word_density": _calc_filler_density,
     "turn_count": _calc_turn_count,
+    "topic_coherence": _calc_topic_coherence,
 }
 
 # ── Scorer ────────────────────────────────────────────────────────────────
