@@ -1,6 +1,6 @@
 # 通话录音分级系统 Web UI 设计
 
-> 状态: 待实现
+> 状态: 已完成（已演进为 Vite + Vue 3 SFC 项目）
 > 类型: 功能设计文档
 
 ## 1. 概述
@@ -17,7 +17,7 @@
 | 层级 | 选型 | 理由 |
 |------|------|------|
 | 后端框架 | **FastAPI** | Python 异步、自动文档、复用现有 `src/` 代码 |
-| 前端 | **Vue 3 (CDN importmap)** | 零构建、零 node_modules，但获得组件化/响应式能力，后续可渐进升级 |
+| 前端 | **Vue 3 + Vite SFC**（演进后） | 最初用 CDN importmap，2026-06-30 重构为 Vite + Vue 3 SFC + Vue Router，支持多页面、组件化、按需加载 |
 | 打包 | **Python zipfile** | 标准库，无额外依赖 |
 | 样式 | **简单 CSS**（不引入 UI 框架） | UI 简陋是刻意的，不为 3 页页面引入重型框架 |
 
@@ -262,3 +262,26 @@ E:\1.Projects\audio_record_filter\
 - ❌ 录音下载/回放功能（只有文件管理）
 - ❌ 统计看板（第二期再说）
 - ❌ 精致 UI 设计（要保持简陋，刻意的）
+
+## 实现记录
+
+### 2026-06-28
+- 初始版本：Vue 3 CDN + FastAPI SSE，单文件 index.html
+- 功能：扫描目录、SSE 批量处理、摘要字段编辑、ZIP 导出
+
+### 2026-06-29
+- 添加复选框选择 + 全选未处理 + 重新识别按钮
+- AMR 格式支持
+- 详情弹窗展示 LLM 推理内容
+
+### 2026-06-30 — 前端重构（档案室风格）
+- 从 Vue 3 CDN 重构为 Vite + Vue 3 SFC + Vue Router 项目
+- 项目结构：`src/web/frontend/` 作为 Vite 根，build 输出到 `src/web/static/`
+- 设计系统：暖亮"档案室"风格（Instrument Serif + Spectral + Karla 字体）
+- 火漆徽章等级标签（TagBadge 组件）
+- 组件拆分：AppHeader、ScanToolbar、SearchInput、RecordCard、SummaryChip、ExportBar、ProgressBar
+- 状态管理：useRecords composable（响应式 CRUD）
+- 路由：Dashboard（首页） + RecordDetail（详情页），预留 /settings、/trends
+- SPA fallback：程序化 catch-all 替代 StaticFiles 挂载，支持 Vue Router History 模式
+- FastAPI 后端零改动，API 层兼容现有接口
+- 适配 13 寸笔记本屏幕，详情页在窄屏自动折叠为上下布局
