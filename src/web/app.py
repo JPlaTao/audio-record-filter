@@ -157,7 +157,10 @@ def _load_existing_results() -> dict[str, dict]:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
             rid = str(uuid.uuid5(uuid.NAMESPACE_URL, data["file"]))
-            summary = _auto_extract_summary(data["file"])
+            # Restore saved summary fields if available (from new format),
+            # otherwise auto-extract from filename only (old format).
+            saved_summary = data.get("summary_fields") or {}
+            summary = _auto_extract_summary(data["file"], llm_values=saved_summary)
             # Try to read transcript preview from the txt file
             txt_path = TRANSCRIPT_DIR / f"{f.stem.replace('_result', '')}.txt"
             transcript_preview = ""
@@ -468,7 +471,7 @@ def _transcribe_and_analyze(
             for sr in llm_result.step_results
         ]
 
-    # Save analysis result
+    # Save analysis result (include summary_fields so they survive restart)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     output_path = OUTPUT_DIR / f"{audio_path.stem}_result.json"
     output_path.write_text(
@@ -478,6 +481,7 @@ def _transcribe_and_analyze(
                 "duration": tr.duration,
                 "level": level,
                 "score": score,
+                "summary_fields": summary_fields,
                 "details": details,
             },
             ensure_ascii=False,
