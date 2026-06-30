@@ -55,11 +55,29 @@ git clone https://github.com/JPlaTao/audio-record-filter.git
 cd audio-record-filter
 ```
 
-### 2. 配置 API 密钥
+### 2. 配置
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入你的 DeepSeek API Key
+# 编辑 .env，填入你的 API Key
+```
+
+**最少配置（仅 DeepSeek，用于文字稿整理 + 评级）：**
+```
+DEEPSEEK_API_KEY=sk-your-deepseek-key
+```
+
+**纯 API 模式（无需下载 Whisper 模型，适合无 GPU 环境）：**
+```
+STT_PROVIDER=openai-api
+STT_API_KEY=sk-your-openai-key
+```
+
+**或使用阿里云 DashScope：**
+```
+STT_PROVIDER=dashscope
+DASHSCOPE_API_KEY=sk-your-dashscope-key
+STT_DASHSCOPE_MODEL=paraformer-8k-v2    # 电话录音推荐 8k 模型
 ```
 
 ### 3. 安装依赖
@@ -82,7 +100,10 @@ pip install -r requirements.txt
 ffmpeg -version
 ```
 
-> **首次运行会自动下载 Whisper large-v3 模型（约 3GB）**。网络不畅时：
+> **💡 不想下载 3GB 模型？** 编辑 `.env` 配置 `STT_PROVIDER=openai-api` 或 `STT_PROVIDER=dashscope`
+> 并填入对应 API Key 即可使用 API 语音识别，零模型下载。
+>
+> 使用 faster-whisper 时首次运行会自动下载 large-v3（约 3GB）。网络不畅时：
 > - 设置代理后再启动：`export https_proxy=http://127.0.0.1:7897`
 > - 或先用小模型体验：`python -m src --model base`（~300MB，下载更快）
 > - 或用脚本手动下载：`scripts\download_model.bat`（Windows）

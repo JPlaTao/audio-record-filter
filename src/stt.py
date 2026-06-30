@@ -1,23 +1,49 @@
-"""Speech-to-text module using faster-whisper."""
+"""Speech-to-text module with pluggable providers.
+
+Supports three backends:
+  - faster-whisper (local GPU/CPU, default)
+  - OpenAI-compatible API (openai-api)
+  - DashScope / 阿里云灵积 (dashscope)
+
+Configure via STT_PROVIDER env var or create_stt() factory.
+"""
 
 from __future__ import annotations
 
 import logging
 import os
 import warnings
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 from .models import TranscribeResult
 
 logger = logging.getLogger(__name__)
 
-# Suppress the FP16 warning on known-hardware combinations
-warnings.filterwarnings("ignore", message=".*FP16 is not supported on CPU.*")
+# ── Abstract Provider ──────────────────────────────────────────────────
 
-# ── Auto-discover NVIDIA CUDA libraries ──────────────────────────────
-# The nvidia-cublas-cu12 pip package installs DLLs in the site-packages
-# directory.  We add them to PATH here so ctranslate2 can find cuBLAS /
-# cuRAND / cuDNN without the user installing the full CUDA Toolkit.
+
+class STTProvider(ABC):
+    """Abstract base for speech-to-text providers."""
+
+    @abstractmethod
+    def transcribe(self, audio_path: str | Path, language: str = "zh") -> TranscribeResult:
+        """Transcribe an audio file to text.
+
+        Args:
+            audio_path: Path to the audio file.
+            language: Language code (e.g. "zh", "en", or None for auto-detect).
+
+        Returns:
+            TranscribeResult with full text and segments.
+        """
+        ...
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Provider 1: faster-whisper (local model, GPU/CUDA accelerated)
+# ═══════════════════════════════════════════════════════════════════════
+
 
 def _discover_nvidia_dlls() -> None:
     """Add NVIDIA DLL directories to PATH if they exist in the venv."""
@@ -39,15 +65,14 @@ def _discover_nvidia_dlls() -> None:
 _discover_nvidia_dlls()
 
 
-class STTEngine:
-    """Wrapper around faster-whisper for transcribing audio files.
+class FasterWhisperProvider(STTProvider):
+    """Wrapper around faster-whisper for local GPU/CPU transcription.
 
     Usage:
-        engine = STTEngine(model_size="large-v3")
+        engine = FasterWhisperProvider(model_size="large-v3")
         result = engine.transcribe("input/call.mp3")
     """
 
-    # Known model sizes for validation / auto-download hints
     KNOWN_SIZES = {"tiny", "base", "small", "medium", "large-v3"}
 
     def __init__(
@@ -56,15 +81,6 @@ class STTEngine:
         device: str = "auto",
         compute_type: str = "auto",
     ) -> None:
-        """Initialize the Whisper model.
-
-        Args:
-            model_size: Whisper model size ("tiny", "base", "small",
-                        "medium", "large-v3") OR a local directory path.
-            device: "cuda", "cpu", or "auto".
-            compute_type: "float16", "int8_float16", "auto", etc.
-                          "auto" picks float16 on CUDA, int8 on CPU.
-        """
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
@@ -74,20 +90,16 @@ class STTEngine:
         """Resolve model_size to a local path if it exists in ./models/."""
         size = self.model_size
 
-        # If it's already a valid path or a known HuggingFace repo name, use as-is
         if Path(size).exists() or size not in self.KNOWN_SIZES:
             return size
 
-        # Check local models/ directory
         local_path = Path(__file__).resolve().parent.parent / "models" / f"faster-whisper-{size}"
         if local_path.exists():
             logger.info("Using local model at %s", local_path)
             return str(local_path)
 
-        # Check HuggingFace cache
         hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
         if hf_cache.exists():
-            # Snapshot folder pattern: models--Systran--faster-whisper-{size}
             snapshot_dir = hf_cache / f"models--Systran--faster-whisper-{size}" / "snapshots"
             if snapshot_dir.exists():
                 snapshots = list(snapshot_dir.iterdir())
@@ -130,16 +142,7 @@ class STTEngine:
             raise
 
     def transcribe(self, audio_path: str | Path, language: str = "zh") -> TranscribeResult:
-        """Transcribe a single audio file.
-
-        Args:
-            audio_path: Path to the audio file (MP3, WAV, etc.).
-            language: Language code (e.g. "zh" for Chinese, "en" for English,
-                      or None for auto-detect).
-
-        Returns:
-            TranscribeResult with full text and segments.
-        """
+        """Transcribe a single audio file using local faster-whisper model."""
         self._load_model()
         path = Path(audio_path)
 
@@ -148,10 +151,8 @@ class STTEngine:
             str(path),
             language=language,
             beam_size=5,
-            vad_filter=True,  # filter out non-speech
-            vad_parameters=dict(
-                min_silence_duration_ms=500,
-            ),
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=500),
         )
 
         segments_list = []
@@ -182,3 +183,242 @@ class STTEngine:
             text=full_text,
             segments=segments_list,
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Provider 2: OpenAI-compatible Whisper API
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class OpenAIAPIProvider(STTProvider):
+    """Transcribe using OpenAI-compatible Whisper API.
+
+    Uses the openai package (already a dependency).
+    Compatible with any OpenAI-format endpoint (OpenAI, vLLM, etc.).
+    """
+
+    def __init__(
+        self,
+        api_key: str = "",
+        base_url: str = "https://api.openai.com/v1",
+        model: str = "whisper-1",
+    ) -> None:
+        if not api_key:
+            raise ValueError(
+                "OpenAI API key is required for OpenAIAPIProvider. "
+                "Set STT_API_KEY env var or pass api_key."
+            )
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+
+    def _get_duration(self, path: Path) -> float:
+        """Try to get audio duration via ffprobe, fall back to estimate."""
+        import subprocess  # noqa: PLC0415
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "quiet",
+                    "-show_entries", "format=duration",
+                    "-of", "csv=p=0",
+                    str(path),
+                ],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return float(result.stdout.strip())
+        except Exception:
+            pass
+        return 0.0
+
+    def transcribe(self, audio_path: str | Path, language: str = "zh") -> TranscribeResult:
+        """Transcribe via OpenAI-compatible Whisper API."""
+        from openai import OpenAI  # noqa: PLC0415
+
+        path = Path(audio_path)
+        logger.info("Transcribing %s via OpenAI API (model=%s) ...", path.name, self.model)
+
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+        with open(path, "rb") as f:
+            kwargs = {
+                "model": self.model,
+                "file": f,
+                "response_format": "verbose_json",
+                "timestamp_granularities": ["segment"],
+            }
+            if language:
+                kwargs["language"] = language
+
+            response = client.audio.transcriptions.create(**kwargs)
+
+        # Build segments from API response
+        segments_list = []
+        full_text_parts = []
+        if hasattr(response, "segments") and response.segments:
+            for seg in response.segments:
+                text = (seg.text or "").strip()
+                segments_list.append({
+                    "start": getattr(seg, "start", 0),
+                    "end": getattr(seg, "end", 0),
+                    "text": text,
+                })
+                full_text_parts.append(text)
+
+        full_text = response.text or " ".join(full_text_parts)
+
+        duration = self._get_duration(path)
+
+        logger.info("  → %s: %d chars (API)", path.name, len(full_text))
+
+        return TranscribeResult(
+            file=path.name,
+            duration=duration,
+            text=full_text.strip(),
+            segments=segments_list,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Provider 3: DashScope / 阿里云灵积
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class DashScopeProvider(STTProvider):
+    """Transcribe using DashScope (阿里云灵积) ASR API.
+
+    Uses paraformer models which are optimized for Chinese speech.
+    For telephone audio (8kHz), use model="paraformer-8k-v2".
+    """
+
+    def __init__(
+        self,
+        api_key: str = "",
+        model: str = "paraformer-v2",
+    ) -> None:
+        if not api_key:
+            raise ValueError(
+                "DashScope API key is required for DashScopeProvider. "
+                "Set DASHSCOPE_API_KEY env var or pass api_key."
+            )
+        self.api_key = api_key
+        self.model = model
+
+    def transcribe(self, audio_path: str | Path, language: str = "zh") -> TranscribeResult:
+        """Transcribe via DashScope ASR API."""
+        try:
+            import dashscope  # noqa: PLC0415
+            from dashscope.audio.asr import Recognition  # noqa: PLC0415
+        except ImportError:
+            raise ImportError(
+                "DashScope package not installed. Run: pip install dashscope"
+            )
+
+        path = Path(audio_path)
+        logger.info("Transcribing %s via DashScope (model=%s) ...", path.name, self.model)
+
+        dashscope.api_key = self.api_key
+
+        recognition = Recognition(model=self.model)
+
+        # Map language hint to sample rate
+        # Chinese telephone audio is typically 8kHz, general audio 16kHz
+        sample_rate = 8000 if "8k" in self.model else 16000
+
+        result = recognition.call(
+            audio_file=str(path),
+            format=path.suffix.lstrip("."),
+            sample_rate=sample_rate,
+        )
+
+        status = getattr(result, "get_status", lambda: "UNKNOWN")()
+        if status != "SUCCEEDED":
+            error_msg = getattr(result, "get_message", lambda: "unknown error")()
+            raise RuntimeError(f"DashScope transcription failed: {status} - {error_msg}")
+
+        # Extract full text
+        full_text = getattr(result, "get_text", lambda: "")() or ""
+
+        # Extract sentences with timestamps
+        segments_list = []
+        sentences = getattr(result, "get_sentence", lambda: [])()
+        if sentences:
+            for sent in sentences:
+                text = getattr(sent, "text", str(sent)) or ""
+                segments_list.append({
+                    "start": getattr(sent, "begin_time", 0),
+                    "end": getattr(sent, "end_time", 0),
+                    "text": text.strip(),
+                })
+        else:
+            segments_list.append({
+                "start": 0,
+                "end": 0,
+                "text": full_text.strip(),
+            })
+
+        logger.info("  → %s: %d chars (DashScope)", path.name, len(full_text))
+
+        return TranscribeResult(
+            file=path.name,
+            duration=0.0,
+            text=full_text.strip(),
+            segments=segments_list,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Factory
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def create_stt(
+    provider: str | None = None,
+    model_size: str = "large-v3",
+    device: str = "auto",
+    api_key: str | None = None,
+    api_base_url: str | None = None,
+    api_model: str | None = None,
+) -> STTProvider:
+    """Create an STT provider based on configuration.
+
+    Provider is selected in this order:
+      1. ``provider`` argument
+      2. ``STT_PROVIDER`` env var
+      3. ``"faster-whisper"`` (default)
+
+    Args:
+        provider: ``"faster-whisper"``, ``"openai-api"``, or ``"dashscope"``.
+        model_size: Whisper model size (faster-whisper only).
+        device: ``"cuda"``, ``"cpu"``, or ``"auto"`` (faster-whisper only).
+        api_key: API key (for openai-api or dashscope; falls back to env vars).
+        api_base_url: Base URL for OpenAI-compatible API.
+        api_model: Model name for API calls (whisper-1 / paraformer-v2 / …).
+
+    Returns:
+        An STTProvider instance.
+    """
+    provider = (provider or os.environ.get("STT_PROVIDER", "faster-whisper")).lower()
+
+    if provider == "dashscope":
+        return DashScopeProvider(
+            api_key=api_key or os.environ.get("DASHSCOPE_API_KEY", ""),
+            model=api_model or os.environ.get("STT_DASHSCOPE_MODEL", "paraformer-v2"),
+        )
+
+    if provider == "openai-api":
+        return OpenAIAPIProvider(
+            api_key=api_key or os.environ.get("STT_API_KEY", ""),
+            base_url=api_base_url or os.environ.get("STT_API_BASE_URL", "https://api.openai.com/v1"),
+            model=api_model or os.environ.get("STT_API_MODEL", "whisper-1"),
+        )
+
+    # Default: faster-whisper
+    return FasterWhisperProvider(model_size=model_size, device=device)
+
+
+# ── Backward compatibility alias ──────────────────────────────────────
+# Old code imported STTEngine; keep the name so existing imports still work.
+
+STTEngine = FasterWhisperProvider

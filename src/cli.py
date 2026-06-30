@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ if __name__ == "__main__" and __package__ is None:
 from .analyzer import Analyzer, RuleAnalyzer  # noqa: E402
 from .analyzer import LLMAnalyzer  # noqa: E402
 from .models import Level, RecordResult  # noqa: E402
-from .stt import STTEngine  # noqa: E402
+from .stt import create_stt, STTEngine  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -207,13 +208,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default="large-v3",
         choices=["tiny", "base", "small", "medium", "large-v3"],
-        help="Whisper 模型大小 (默认: large-v3，small/base 更快但准确率略低)",
+        help="Whisper 模型大小 (默认: large-v3，仅 STT_PROVIDER=faster-whisper 时生效)",
     )
     parser.add_argument(
         "--device",
         default="auto",
         choices=["auto", "cuda", "cpu"],
-        help="运行设备 (默认: auto → 有 CUDA 则用 GPU)",
+        help="运行设备 (默认: auto → 有 CUDA 则用 GPU，仅 STT_PROVIDER=faster-whisper 时生效)",
+    )
+    parser.add_argument(
+        "--stt-provider",
+        default=None,
+        choices=["faster-whisper", "openai-api", "dashscope"],
+        help="语音识别引擎 (默认: faster-whisper，可通过 STT_PROVIDER 环境变量配置)",
+    )
+    parser.add_argument(
+        "--stt-api-key",
+        default=None,
+        help="语音识别 API Key (仅 openai-api 或 dashscope 模式需要，或用 STT_API_KEY / DASHSCOPE_API_KEY 环境变量)",
     )
     parser.add_argument(
         "--language",
@@ -266,13 +278,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     analyzer_label = "LLM (DeepSeek)" if args.analyzer == "llm" else "规则引擎 (关键词)"
+    provider_name = args.stt_provider or os.environ.get("STT_PROVIDER", "faster-whisper")
     print(f"\n🎯 通话录音分级系统")
-    print(f"   模型: {args.model}  设备: {args.device}  语言: {args.language or '自动'}")
+    print(f"   STT: {provider_name}  模型: {args.model}  设备: {args.device}  语言: {args.language or '自动'}")
     print(f"   分析器: {analyzer_label}")
     print(f"   待处理: {len(audio_files)} 条录音\n")
 
     # Init engine & analyzer
-    stt = STTEngine(model_size=args.model, device=args.device)
+    stt = create_stt(
+        provider=args.stt_provider,
+        model_size=args.model,
+        device=args.device,
+        api_key=args.stt_api_key,
+    )
     if args.analyzer == "llm":
         analyzer: Analyzer = LLMAnalyzer(api_key=args.api_key)
     else:

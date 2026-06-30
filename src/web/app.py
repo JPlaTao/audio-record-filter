@@ -35,7 +35,7 @@ load_dotenv()
 
 from src.analyzer import LLMAnalyzer, RuleAnalyzer  # noqa: E402
 from src.quality_scorer import QualityScorer  # noqa: E402
-from src.stt import STTEngine  # noqa: E402
+from src.stt import STTProvider, create_stt  # noqa: E402
 from src.summary_extractor import extract_summary  # noqa: E402
 from src.transcript_cleaner import clean_transcript  # noqa: E402
 from src.web.config import (  # noqa: E402
@@ -61,16 +61,16 @@ SUMMARY_FIELDS: list[SummaryField] = []
 
 # ── Shared engine instances (reused across requests) ────────────────────
 
-_stt: STTEngine | None = None
+_stt: STTProvider | None = None
 _rule_analyzer: RuleAnalyzer | None = None
 _llm_analyzer: LLMAnalyzer | None = None
 _quality_scorer: QualityScorer | None = None
 
 
-def get_stt() -> STTEngine:
+def get_stt() -> STTProvider:
     global _stt
     if _stt is None:
-        _stt = STTEngine(model_size="large-v3", device="auto")
+        _stt = create_stt()
     return _stt
 
 
