@@ -213,7 +213,7 @@ async def get_fields() -> list[dict]:
     ]
 
 
-@app.post("/api/scan")
+@app.get("/api/scan")
 async def scan_input() -> ScanResponse:
     """Scan input/ directory for audio files."""
     files: list[dict] = []
