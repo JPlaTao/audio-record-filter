@@ -291,7 +291,32 @@ class LLMAnalyzer(Analyzer):
             return "使用4阶段12步骤评估话术完整度，判断初级/中级/高级。"
         return self.criteria_path.read_text(encoding="utf-8")
 
-    # ── Build prompt ───────────────────────────────────────────────────
+    # ── Bad case examples (few-shot) ────────────────────────────────────
+
+    _BAD_CASE_EXAMPLES = """
+## ⚠️ 重要：先看反例 —— 避免"看起来像中级，实际是初级"的陷阱
+
+以下两个案例中，系统曾经误判为中级，但业务方确认为初级。
+请特别注意它们的特征，判断当前录音是否有类似问题：
+
+示例 1：
+  录音：林明杰
+  覆盖度：57%（中），质量分：0.28（低）
+  学员状态：全程被动，"嗯"、"好"、"知道了"
+  问题：按清单走流程，无追问、无应变、全程机械
+  正确等级：初级
+  原因：覆盖度够但质量低。学员不主动、顾问不追问 → 只适合新手听
+
+示例 2：
+  录音：冷松芮
+  覆盖度：39%（中），质量分：0.31（低）
+  学员状态：被动应答，有明显内容错误（人力资源描述有误）
+  问题：转折生硬、缺乏深度追问、内容有硬伤
+  正确等级：初级
+  原因：刚过覆盖度门槛 + 质量分低 + 内容硬伤 → 只适合新手听"""
+
+    def _bad_case_block(self) -> str:
+        return self._BAD_CASE_EXAMPLES
 
     def _build_system_prompt(self) -> str:
         return f"""你是一位专业的电话销售录音评估专家。你的任务是根据以下判断标准，对通话录音的文字稿进行等级评估。
@@ -312,6 +337,8 @@ class LLMAnalyzer(Analyzer):
 
 {self._criteria}
 
+{self._bad_case_block()}
+
 ## 输出格式
 
 请以 JSON 格式返回分析结果，不要包含其他文字：
@@ -320,7 +347,7 @@ class LLMAnalyzer(Analyzer):
 {{
   "level": "beginner" | "intermediate" | "advanced",
   "score": 0.0-1.0 之间的数字,
-  "reasoning": "简要说明判定理由，指出哪些做得好、哪些不足",
+  "reasoning": "简要说明判定理由，指出哪些做得好、哪些不足，特别说明是否参考了质量分析数据",
   "steps": [
     {{
       "name": "步骤名称（如①开场介绍身份）",
@@ -335,19 +362,110 @@ class LLMAnalyzer(Analyzer):
 注意：
 - score 是整体完成度，0-1 之间
 - 每个步骤的 score 表示该步骤的完成质量
-- level 严格按照判断标准中的阈值来定"""
+- level 严格按照判断标准中的"二维矩阵"来定"""
 
-    def _build_user_prompt(self, transcript: str) -> str:
-        # Truncate very long transcripts to avoid token limits (~8K chars is safe)
-        max_chars = 8000
+    # ── Matrix judge ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _matrix_judge(coverage: float, quality: float) -> str:
+        """Determine suggested level from the 2D coverage × quality matrix.
+
+        This is a **reference** for the LLM, not a hard rule.
+        """
+        if coverage < 0.35:
+            cov = "low"
+        elif coverage < 0.70:
+            cov = "medium"
+        else:
+            cov = "high"
+
+        if quality < 0.4:
+            qual = "low"
+        elif quality < 0.7:
+            qual = "medium"
+        else:
+            qual = "high"
+
+        matrix = {
+            ("low", "low"): "beginner",
+            ("low", "medium"): "beginner",
+            ("low", "high"): "intermediate",
+            ("medium", "low"): "beginner",
+            ("medium", "medium"): "intermediate",
+            ("medium", "high"): "advanced",
+            ("high", "low"): "beginner",
+            ("high", "medium"): "advanced",
+            ("high", "high"): "advanced",
+        }
+        return matrix.get((cov, qual), "beginner")
+
+    # ── Build user prompt ───────────────────────────────────────────────
+
+    def _build_user_prompt(
+        self,
+        transcript: str,
+        quality_data: dict | None = None,
+        coverage_data: dict | None = None,
+    ) -> str:
+        parts: list[str] = []
+
+        if coverage_data:
+            parts.append("## 客观分析数据 — 规则分析结果")
+            parts.append(f"- 整体覆盖度: {coverage_data.get('score', 0) * 100:.0f}%")
+            parts.append(
+                f"- 完成步骤: {coverage_data.get('completed_steps', 0)}/"
+                f"{coverage_data.get('total_steps', 12)}"
+            )
+            steps = coverage_data.get("step_results", [])
+            for s in steps:
+                icon = "✅" if s.get("matched") else "⭕"
+                parts.append(f"  {icon} {s.get('name', '?')} ({s.get('score', 0) * 100:.0f}%)")
+            parts.append("")
+
+        if quality_data:
+            parts.append("## 客观分析数据 — 通话质量分析")
+            q_score = quality_data.get("overall_score", 0)
+            q_label = "低" if q_score < 0.4 else "中" if q_score < 0.7 else "高"
+            parts.append(f"- 综合质量分: {q_score:.2f}（{q_label}）")
+            for sig in quality_data.get("signals", []):
+                parts.append(
+                    f"  - {sig.get('label', '?')}: {sig.get('value', 0)}"
+                    f"（{sig.get('assessment', '?')}）"
+                )
+            parts.append("")
+
+        if coverage_data and quality_data:
+            cov_score = coverage_data.get("score", 0)
+            qual_score = quality_data.get("overall_score", 0)
+            matrix_level = self._matrix_judge(cov_score, qual_score)
+            cov_label = "低" if cov_score < 0.35 else "中" if cov_score < 0.7 else "高"
+            qual_label = "低" if qual_score < 0.4 else "中" if qual_score < 0.7 else "高"
+            parts.append("## 二维矩阵参考")
+            parts.append(f"覆盖度: {cov_score * 100:.0f}% → {cov_label}")
+            parts.append(f"质量分: {qual_score:.2f} → {qual_label}")
+            parts.append(f"📋 矩阵建议等级: **{matrix_level}**")
+            parts.append("（矩阵仅为参考建议，请结合文字稿内容做出最终判断）")
+            parts.append("")
+
+        # Append transcript
+        max_chars = 7000  # reduced to make room for structured data
         text = transcript[:max_chars]
         if len(transcript) > max_chars:
             text += "\n\n[注意：文字稿过长，已截断。仅根据以上内容评估。]"
-        return f"请评估以下通话录音文字稿：\n\n{text}"
+
+        parts.append("---")
+        parts.append(f"请评估以下通话录音文字稿：\n\n{text}")
+        return "\n".join(parts)
 
     # ── Analyze ────────────────────────────────────────────────────────
 
-    def analyze(self, transcript: str, script: Script | None = None) -> AnalysisResult:
+    def analyze(
+        self,
+        transcript: str,
+        script: Script | None = None,
+        quality_data: dict | None = None,
+        coverage_data: dict | None = None,
+    ) -> AnalysisResult:
         if not self.api_key:
             raise RuntimeError(
                 "DeepSeek API 密钥未设置。请通过环境变量 DEEPSEEK_API_KEY 或 "
@@ -356,13 +474,13 @@ class LLMAnalyzer(Analyzer):
             )
 
         client = self._get_client()
-        logger.info("LLM 分析中 (model=%s)...", self.model)
+        logger.info("LLM 分析中 (model=%s, quality_data=%s)...", self.model, quality_data is not None)
 
         response = client.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": self._build_system_prompt()},
-                {"role": "user", "content": self._build_user_prompt(transcript)},
+                {"role": "user", "content": self._build_user_prompt(transcript, quality_data, coverage_data)},
             ],
             temperature=0.1,
             max_tokens=2048,

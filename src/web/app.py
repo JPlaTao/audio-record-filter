@@ -35,6 +35,7 @@ if __name__ == "__main__" and __package__ is None:
 load_dotenv()
 
 from src.analyzer import LLMAnalyzer, RuleAnalyzer  # noqa: E402
+from src.quality_scorer import QualityScorer  # noqa: E402
 from src.stt import STTEngine  # noqa: E402
 from src.summary_extractor import extract_summary  # noqa: E402
 from src.transcript_cleaner import clean_transcript  # noqa: E402
@@ -64,6 +65,7 @@ SUMMARY_FIELDS: list[SummaryField] = []
 _stt: STTEngine | None = None
 _rule_analyzer: RuleAnalyzer | None = None
 _llm_analyzer: LLMAnalyzer | None = None
+_quality_scorer: QualityScorer | None = None
 
 
 def get_stt() -> STTEngine:
@@ -92,6 +94,14 @@ def get_llm_analyzer() -> LLMAnalyzer | None:
             logger.warning("LLM 分析器初始化失败: %s", e)
             return None
     return _llm_analyzer
+
+
+def get_quality_scorer() -> QualityScorer:
+    """Return singleton QualityScorer instance."""
+    global _quality_scorer
+    if _quality_scorer is None:
+        _quality_scorer = QualityScorer()
+    return _quality_scorer
 
 
 # ── API models ──────────────────────────────────────────────────────────
@@ -260,6 +270,7 @@ async def _process_generator(files_param: str | None = None) -> AsyncGenerator[s
         stt = get_stt()
         rule_analyzer = get_rule_analyzer()
         llm_analyzer = get_llm_analyzer()
+        quality_scorer = get_quality_scorer()
 
         if not INPUT_DIR.exists():
             logger.error("input/ 目录不存在")
@@ -303,7 +314,7 @@ async def _process_generator(files_param: str | None = None) -> AsyncGenerator[s
                 loop = asyncio.get_event_loop()
                 result = await asyncio.wait_for(
                     loop.run_in_executor(
-                        None, lambda p=audio_path: _transcribe_and_analyze(p, stt, rule_analyzer, llm_analyzer)
+                        None, lambda p=audio_path: _transcribe_and_analyze(p, stt, rule_analyzer, llm_analyzer, quality_scorer)
                     ),
                     timeout=600,  # 10 min max per file
                 )
@@ -355,11 +366,14 @@ def _transcribe_and_analyze(
     stt: STTEngine,
     rule_analyzer: RuleAnalyzer,
     llm_analyzer: LLMAnalyzer | None = None,
+    quality_scorer: QualityScorer | None = None,
 ) -> dict:
     """Run STT + analysis synchronously (called in thread pool).
 
-    Runs RuleAnalyzer (keyword) always, plus LLM analyzer if available.
-    LLM result is used as the primary level/score; RuleAnalyzer is the fallback.
+    Three-layer pipeline:
+      1. RuleAnalyzer — step coverage
+      2. QualityScorer — objective quality signals
+      3. LLMAnalyzer — final judgment (coverage + quality + transcript)
     """
     tr = stt.transcribe(str(audio_path), language="zh")
     rule_result = rule_analyzer.analyze(tr.text)
@@ -379,11 +393,39 @@ def _transcribe_and_analyze(
         summary_fields = extract_result.values
         logger.info("摘要字段提取完成: %s", audio_path.name)
 
-    # LLM grade analysis — use as primary if available
+    # Layer 2: Quality scoring (objective signals)
+    quality_result = None
+    if quality_scorer:
+        try:
+            quality_result = quality_scorer.score(display_text, tr.text)
+            logger.info(
+                "质量评分完成: %s -> overall=%.2f",
+                audio_path.name,
+                quality_result.overall_score,
+            )
+        except Exception as e:
+            logger.warning("质量评分失败: %s", e)
+
+    # Build coverage data for LLM
+    coverage_data = {
+        "score": rule_result.score,
+        "completed_steps": rule_result.completed_steps,
+        "total_steps": rule_result.total_steps,
+        "step_results": [
+            {"name": sr.step_name, "matched": sr.matched, "score": sr.score}
+            for sr in rule_result.step_results
+        ],
+    }
+
+    # Layer 3: LLM grade analysis — receives coverage + quality data
     llm_result = None
     if llm_analyzer:
         try:
-            llm_result = llm_analyzer.analyze(tr.text)
+            llm_result = llm_analyzer.analyze(
+                tr.text,
+                quality_data=quality_result.to_dict() if quality_result else None,
+                coverage_data=coverage_data,
+            )
             logger.info("LLM 评级完成: %s -> %s", audio_path.name, llm_result.level.value)
         except Exception as e:
             logger.warning("LLM 评级失败，回退到规则分析: %s", e)
@@ -412,6 +454,8 @@ def _transcribe_and_analyze(
         ],
         "reasoning": rule_result.reasoning,
     }
+    if quality_result:
+        details["quality"] = quality_result.to_dict()
     if llm_result:
         details["llm_level"] = llm_result.level.value
         details["llm_score"] = llm_result.score

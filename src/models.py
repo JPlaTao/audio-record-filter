@@ -74,6 +74,42 @@ class AnalysisResult:
 
 
 @dataclass
+class QualitySignalResult:
+    """Result for a single quality signal (Layer 2 of the pipeline)."""
+
+    key: str
+    label: str
+    value: float
+    score: float = 0.0  # 0-1 normalized score
+    weight: float = 1.0
+    assessment: str = ""  # "优秀" / "良好" / "一般" / "差"
+
+
+@dataclass
+class QualityResult:
+    """Overall quality assessment (Layer 2 pipeline output)."""
+
+    overall_score: float = 0.0  # 0-1 weighted average
+    signals: list[QualitySignalResult] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "overall_score": self.overall_score,
+            "signals": [
+                {
+                    "key": s.key,
+                    "label": s.label,
+                    "value": s.value,
+                    "score": s.score,
+                    "weight": s.weight,
+                    "assessment": s.assessment,
+                }
+                for s in self.signals
+            ],
+        }
+
+
+@dataclass
 class TranscribeResult:
     """Result of transcribing an audio file."""
 
