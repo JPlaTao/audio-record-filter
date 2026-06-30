@@ -1,135 +1,265 @@
-# 通话录音分级系统
+# 通话录音分级系统 (Audio Record Filter)
 
-自动将通话录音转文字，并按话术完整度分为 **初级 / 中级 / 高级**。
+自动将通话录音（MP3/AMR/M4A）转文字，通过三层管线智能分级为 **新手 / 中级 / 高级**，并提供 Web UI 方便业务人员使用。
 
-```
-录音 MP3 → faster-whisper 转文字 → 话术匹配引擎 → 等级判定 → JSON 报告 + 控制台输出
-```
+> 🏛️ 档案室风格 Web UI · 三维评级 · 质量信号 · LLM 辅助
 
-## 环境要求
+---
 
-| 环境 | 要求 |
+## 功能
+
+| 功能 | 说明 |
 |------|------|
-| Python | 3.10+ |
-| NVIDIA GPU | 推荐 (Whisper large-v3 约需 5GB 显存) |
-| CUDA Toolkit | 11.8+（如果 GPU 加速） |
-| ffmpeg | 系统 PATH 中可用 |
+| 🎤 **语音转文字** | faster-whisper large-v3，GPU/CUDA 加速 |
+| 📊 **三级评级** | 覆盖度 → 质量信号 → LLM 综合判定 |
+| 🧪 **7 个质量信号** | 学员发言占比、追问密度、话题一致性、话轮数…… |
+| 🧠 **LLM 辅助** | DeepSeek 做说话人分离、文字稿整理、摘要提取、综合评级 |
+| 🌐 **Web UI** | Vue 3 SPA — 档案室风格，批量处理 + 详情查看 + 编辑导出 |
+| 📦 **智能导出** | ZIP 打包，文件名自动拼接摘要字段（姓名_状态_意向_学历） |
+| 📋 **可配字段** | YAML 配置摘要字段，UI 和 ZIP 命名自动生效 |
+| 🔌 **CLI 模式** | 无头运行，适合服务器批量处理 |
+
+## 评级体系
+
+核心理念：**评级不是"这通电话打得好不好"，而是"这条录音适合什么阶段的顾问听来学习"。**
+
+```
+┌─────────────────────────────────────────────────┐
+│               三层评级管线                         │
+│                                                   │
+│  通话录音 → ① 话术覆盖度打分                      │
+│           → ② 7 项质量信号评分                    │
+│           → ③ LLM 综合判决（含 2D 矩阵 + Bad Case）│
+│           → 新手 / 中级 / 高级                     │
+└─────────────────────────────────────────────────┘
+```
+
+详见 [docs/录音等级判断标准.md](docs/录音等级判断标准.md)。
+
+---
 
 ## 快速开始
 
-### 1. 安装依赖
+### 环境要求
+
+- Python 3.10+
+- NVIDIA GPU（推荐，large-v3 约需 5GB 显存）
+- CUDA Toolkit 11.8+（GPU 加速时）
+- ffmpeg（系统 PATH 中可用）
+- DeepSeek API Key（[免费注册](https://platform.deepseek.com/)）
+
+### 1. 克隆
 
 ```bash
-# 激活虚拟环境
+git clone https://github.com/JPlaTao/audio-record-filter.git
+cd audio-record-filter
+```
+
+### 2. 配置 API 密钥
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入你的 DeepSeek API Key
+```
+
+### 3. 安装依赖
+
+```bash
+# 创建虚拟环境
 python -m venv venv
-source venv/Scripts/activate    # Git Bash / WSL
-# 或 .\venv\Scripts\activate   # Windows CMD
+
+# Windows (Git Bash / WSL)
+source venv/Scripts/activate
+# Windows (CMD)
+venv\Scripts\activate
+# Linux / macOS
+source venv/bin/activate
 
 # 安装 Python 包
 pip install -r requirements.txt
 
-# 确保 ffmpeg 在 PATH 中
+# 验证 ffmpeg
 ffmpeg -version
 ```
 
-### 2. 放录音
+### 4. 放录音
 
-把 MP3 文件放到 `input/` 目录：
+把音频文件放到 `input/` 目录（支持 `.mp3` `.wav` `.m4a` `.ogg` `.flac` `.amr`）：
 
 ```
 input/
-├── call_20250601_001.mp3
-├── call_20250601_002.mp3
+├── 张三_20250628.mp3
+├── 李四_20250630.m4a
 └── ...
 ```
 
-### 3. 运行
+### 5. 启动 Web UI
 
 ```bash
-# 处理 input/ 下所有录音（默认 large-v3 模型，GPU 加速）
-python src/cli.py
+# Windows
+scripts\run_web.bat
+
+# Linux / macOS
+bash scripts/run_web.sh
+
+# 或直接
+python -m uvicorn src.web.app:app --host 0.0.0.0 --port 8080
+```
+
+浏览器打开 **http://localhost:8080**
+
+### 6. 或者使用 CLI
+
+```bash
+# 处理 input/ 下所有录音
+python -m src
 
 # 处理单个文件
-python src/cli.py -i input/call.mp3
+python -m src -i input/call.mp3
 
-# 用小模型（更快、省显存，适合测试）
-python src/cli.py --model base
+# 用小模型（更快、省显存）
+python -m src --model base
 
 # 只用 CPU
-python src/cli.py --device cpu
-
-# 英文录音
-python src/cli.py --language en
-
-# 详细日志
-python src/cli.py -v
+python -m src --device cpu
 ```
 
-### 4. 查看结果
+---
+
+## Web UI 使用指南
+
+### 首页（Dashboard）
 
 ```
-📞 call_20250601_001.mp3 (5分45秒)
-   等级: 🟡 中级 (55%)
-   完成步骤: 5/10
-   缺失关键词: 价格异议处理、跟进邀约
+┌─────────────────────────────────────────────────────┐
+│  📁 录音档案 v0.3     [首页] [趋势] [设置]           │
+├─────────────────────────────────────────────────────┤
+│  [📥 扫描] [▶ 处理选中] [☐ 全选] [🗑 清除]         │
+│  ████████████░░░░ 75%                               │
+│                                                     │
+│  ☐ 张三.mp3    🟢 初级   姓名: [张三]  状态:[在职 ▼]│
+│  ☑ 李四.m4a    🟡 中级   姓名: [李四]  状态:[离职 ▼]│
+│                                                     │
+│  已选 1 条                              [📦 导出]   │
+└─────────────────────────────────────────────────────┘
 ```
 
-详细结果 JSON 输出到 `output/` 目录，文字稿 JSON 输出到 `transcripts/` 目录。
+- **扫描** — 列出 `input/` 下所有音频文件
+- **处理选中** — 勾选后批量处理，SSE 实时推送进度
+- **编辑** — 每个摘要字段可直接 inline 修改
+- **导出** — ZIP 打包，文件名含摘要信息
 
-## 配置话术脚本
+### 详情页（RecordDetail）
 
-默认使用内置的通用话术步骤（开场白、需求挖掘、产品介绍、异议处理、促成邀约）。
+点击录音条目进入详情页，可查看：
+- 等级火漆徽章 + LLM 评级理由
+- 左侧：说话人分离后的文字稿
+- 右侧：LLM 推理过程、质量信号评分、规则分析详情
 
-**自定义话术脚本：** 编辑 `src/analyzer.py` 中的 `FALLBACK_STEPS`，或传入自定义 `Script` 对象：
+---
 
-```python
-from src.models import Script, ScriptStep
-from src.analyzer import RuleAnalyzer
-
-my_script = Script(
-    name="销售话术V2",
-    steps=[
-        ScriptStep("第一步", "...", primary_keywords=[...], ...),
-        ...
-    ]
-)
-analyzer = RuleAnalyzer(script=my_script)
-```
-
-后续会支持从 YAML/JSON 配置文件加载话术脚本。
-
-## 架构
+## 项目结构
 
 ```
-src/
-├── cli.py       # CLI 入口 (argparse)
-├── stt.py       # faster-whisper 封装（语音转文字）
-├── analyzer.py  # 文本分析引擎（策略模式，可替换为 LLM）
-└── models.py    # 数据模型
+audio_record_filter/
+├── input/                     # 放入录音文件
+├── output/                    # 分析结果 JSON
+├── transcripts/               # 文字稿 JSON
+├── config/
+│   └── summary_fields.yaml    # 摘要字段配置
+├── docs/
+│   ├── 录音等级判断标准.md     # 评级"宪法"（编辑此文件 = 编辑 LLM 行为）
+│   └── superpowers/           # 设计文档与计划
+├── scripts/
+│   ├── run.bat / run.sh       # CLI 启动脚本
+│   ├── run_web.bat / run_web.sh  # Web UI 启动脚本
+│   └── download_model.bat     # Whisper 模型下载工具
+├── src/
+│   ├── cli.py                 # CLI 入口
+│   ├── stt.py                 # faster-whisper 封装
+│   ├── analyzer.py            # RuleAnalyzer + LLMAnalyzer（策略模式）
+│   ├── quality_scorer.py      # 质量信号评分模块
+│   ├── transcript_cleaner.py  # LLM 说话人分离 + 文字稿整理
+│   ├── summary_extractor.py   # LLM 摘要字段提取
+│   ├── models.py              # 数据模型
+│   └── web/
+│       ├── app.py             # FastAPI 入口
+│       ├── config.py          # 配置加载
+│       └── frontend/          # Vue 3 前端源码
+├── .env.example               # 环境变量模板
+├── .env                       # API 密钥（已 gitignore）
+├── requirements.txt
+└── README.md
 ```
 
-文本分析引擎使用**策略模式**：
+---
 
-- **`RuleAnalyzer`**（第一期）— 关键词/步骤匹配
-- **`LLMAnalyzer`**（预留）— 后续接入 LLM，接口已对齐
+## 自定义配置
 
-两者实现相同的 `Analyzer` 抽象类，在 `cli.py` 中替换一行即可切换。
+### 摘要字段
 
-## 输出
+编辑 `config/summary_fields.yaml`：
 
-控制台彩色摘要 + `output/<文件名>_result.json`：
+```yaml
+fields:
+  - key: name
+    label: 姓名
+    type: text
+    extract_from: filename      # 从文件名自动提取
+    required: true
+    filename_order: 1            # ZIP 文件名中排第几位
 
-```json
-{
-  "file": "call.mp3",
-  "duration": 345,
-  "level": "intermediate",
-  "score": 0.55,
-  "details": {
-    "total_steps": 10,
-    "completed_steps": 5,
-    "step_results": [...],
-    "missing_keywords": [...]
-  }
-}
+  - key: status
+    label: 状态
+    type: enum
+    options: [在职, 离职, 待业, 未识别]
+    extract_from: analysis       # LLM 从对话中提取
+    filename_order: 2
 ```
+
+新增/删除/排序字段只需修改此文件，UI 和 ZIP 命名自动生效。
+
+### 评级标准
+
+编辑 `docs/录音等级判断标准.md`：
+
+- 修改 2D 矩阵的阈值（覆盖度 × 质量分）
+- 调整质量信号权重
+- 添加 Bad Case 示例
+
+此文件同时作为 LLM 的 system prompt 来源。
+
+---
+
+## 前端开发（可选）
+
+如果你需要修改 Web UI：
+
+```bash
+cd src/web/frontend
+pnpm install       # 需要 Node.js + pnpm
+pnpm dev           # Vite 开发服务器（端口 5173）
+pnpm build         # 构建到 ../static/
+```
+
+后端 FastAPI 已配置代理，`pnpm dev` 下的 `/api` 请求会自动转发到 `localhost:8080`。
+
+---
+
+## 技术栈
+
+| 领域 | 技术 |
+|------|------|
+| STT | faster-whisper (large-v3, CTranslate2) |
+| 分析引擎 | RuleAnalyzer（规则）+ LLMAnalyzer（DeepSeek） |
+| 质量信号 | 7 项可配置指标，加权评分 |
+| 后端 | FastAPI + uvicorn |
+| 前端 | Vue 3 + Vite + Vue Router |
+| 设计 | 手写 CSS（档案室风格） |
+| 配置 | YAML + .env |
+
+---
+
+## License
+
+[MIT](LICENSE)
