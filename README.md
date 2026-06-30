@@ -82,6 +82,11 @@ pip install -r requirements.txt
 ffmpeg -version
 ```
 
+> **首次运行会自动下载 Whisper large-v3 模型（约 3GB）**。网络不畅时：
+> - 设置代理后再启动：`export https_proxy=http://127.0.0.1:7897`
+> - 或先用小模型体验：`python -m src --model base`（~300MB，下载更快）
+> - 或用脚本手动下载：`scripts\download_model.bat`（Windows）
+
 ### 4. 放录音
 
 把音频文件放到 `input/` 目录（支持 `.mp3` `.wav` `.m4a` `.ogg` `.flac` `.amr`）：
