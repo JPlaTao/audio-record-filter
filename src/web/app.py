@@ -23,7 +23,6 @@ from dotenv import load_dotenv
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Allow running as `python src/web/app.py`
@@ -592,11 +591,22 @@ async def export_zip(body: ExportRequest) -> FileResponse:
     )
 
 
-# ── Static file mount (after API routes so they take priority) ──────────
+# ── Static file serving + SPA fallback ─────────────────────────────
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+
+
+@app.get("/{full_path:path}")
+async def _spa_serve(full_path: str) -> FileResponse:
+    """Serve static files with SPA fallback for Vue Router.
+
+    If the requested path matches an existing file in static/, serve it.
+    Otherwise serve index.html so Vue Router can handle the route.
+    """
+    candidate = STATIC_DIR / full_path
+    if candidate.exists() and candidate.is_file():
+        return FileResponse(str(candidate))
+    return FileResponse(str(STATIC_DIR / "index.html"), media_type="text/html")
 
 # ── Entry ───────────────────────────────────────────────────────────────
 
